@@ -15,17 +15,36 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 # Cosine-similarity threshold recommended for SFace by the model authors.
 MATCH_THRESHOLD = 0.363
 
+# A face overlapping a bystander from the previous call by at least this IoU is taken to be
+# the same bystander, skipping recognition, for up to RECHECK_AFTER calls.
+TRACK_IOU = 0.5
+RECHECK_AFTER = 5
+
 
 class FaceFilter:
-    """Finds faces in a frame and returns the ones that do not belong to the crew."""
+    """Finds faces in a frame and returns the ones that do not belong to the crew.
 
-    def __init__(self, min_score: float = 0.6, match_threshold: float = MATCH_THRESHOLD):
+    Calls are expected to come from consecutive frames of one video: faces that were
+    bystanders in the previous call are tracked by overlap instead of being recognised again.
+    Tracking can only mark a face as a bystander, so it never leaves a face unblurred.
+    """
+
+    def __init__(
+        self,
+        min_score: float = 0.6,
+        match_threshold: float = MATCH_THRESHOLD,
+        max_width: int | None = None,
+    ):
+        """`max_width` downscales wider frames before detection, trading small-face recall
+        for speed."""
         self._detector = cv2.FaceDetectorYN.create(
             str(fetch(FACE_DETECTOR)), "", (320, 320), min_score
         )
         self._recognizer = cv2.FaceRecognizerSF.create(str(fetch(FACE_RECOGNIZER)), "")
         self._match_threshold = match_threshold
+        self._max_width = max_width
         self._crew: list[np.ndarray] = []
+        self._bystanders: list[tuple[np.ndarray, int]] = []  # box, calls since recognised
 
     def enroll(self, paths: Iterable[Path]) -> None:
         """Add the largest face in each image to the crew."""
@@ -40,11 +59,27 @@ class FaceFilter:
             self._crew.append(self._embed(image, largest))
 
     def __call__(self, frame: np.ndarray) -> list[Box]:
-        return [
-            (int(f[0]), int(f[1]), int(f[2]), int(f[3]))
-            for f in self._detect(frame)
-            if not self._is_crew(frame, f)
-        ]
+        scale = 1.0
+        if self._max_width and frame.shape[1] > self._max_width:
+            scale = frame.shape[1] / self._max_width
+            size = (self._max_width, round(frame.shape[0] / scale))
+            frame = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+        boxes: list[Box] = []
+        bystanders: list[tuple[np.ndarray, int]] = []
+        for face in self._detect(frame):
+            age = self._tracked_age(face[:4])
+            if age is not None and age < RECHECK_AFTER:
+                bystanders.append((face[:4], age + 1))
+            elif self._is_crew(frame, face):
+                continue
+            else:
+                bystanders.append((face[:4], 0))
+            boxes.append(tuple(round(float(v) * scale) for v in face[:4]))
+        self._bystanders = bystanders if self._crew else []
+        return boxes
+
+    def _tracked_age(self, box: np.ndarray) -> int | None:
+        return next((age for prev, age in self._bystanders if iou(box, prev) >= TRACK_IOU), None)
 
     def _detect(self, image: np.ndarray) -> np.ndarray:
         height, width = image.shape[:2]
@@ -64,6 +99,16 @@ class FaceFilter:
             >= self._match_threshold
             for known in self._crew
         )
+
+
+def iou(a: np.ndarray, b: np.ndarray) -> float:
+    """Intersection over union of two (x, y, width, height) boxes."""
+    w = min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])
+    h = min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    if w <= 0 or h <= 0:
+        return 0.0
+    inter = w * h
+    return float(inter / (a[2] * a[3] + b[2] * b[3] - inter))
 
 
 def crew_images(directory: Path) -> list[Path]:

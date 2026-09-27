@@ -1,54 +1,11 @@
+from fractions import Fraction
+from types import SimpleNamespace
+
 import av
-import numpy as np
 import pytest
+from media import BOX, FRAMES, HEIGHT, INSIDE, WIDTH, is_blurred, make_video, read_frames
 
-from crowdveil.video import redact_file
-
-WIDTH, HEIGHT, FRAMES, RATE = 128, 96, 30, 30
-BOX = (48, 32, 32, 32)
-INSIDE = (slice(40, 56), slice(56, 72))  # well within BOX
-
-
-def checkerboard():
-    y, x = np.indices((HEIGHT, WIDTH))
-    image = (((x // 4) + (y // 4)) % 2 * 255).astype(np.uint8)
-    return np.dstack([image] * 3)
-
-
-def make_video(path, rotation=None, video=True, audio=True):
-    with av.open(str(path), "w") as out:
-        vstream = out.add_stream("libx264", rate=RATE) if video else None
-        astream = out.add_stream("aac", rate=48000, layout="mono") if audio else None
-
-        if vstream:
-            vstream.width, vstream.height, vstream.pix_fmt = WIDTH, HEIGHT, "yuv420p"
-            vstream.options = {"crf": "10"}
-            if rotation is not None:
-                vstream.set_display_rotation(rotation)
-            image = checkerboard()
-            image[:16, :16] = (0, 0, 255)  # red marker, top-left
-            for i in range(FRAMES):
-                frame = av.VideoFrame.from_ndarray(image, format="bgr24")
-                frame.pts = i
-                out.mux(vstream.encode(frame))
-            out.mux(vstream.encode(None))
-
-        if astream:
-            samples = 48000 * FRAMES // RATE
-            tone = np.sin(np.arange(samples) * 2 * np.pi * 440 / 48000).astype(np.float32)
-            frame = av.AudioFrame.from_ndarray(tone[None, :], format="fltp", layout="mono")
-            frame.sample_rate, frame.pts = 48000, 0
-            out.mux(astream.encode(frame))
-            out.mux(astream.encode(None))
-
-
-def read_frames(path):
-    with av.open(str(path)) as inp:
-        return [f.to_ndarray(format="bgr24") for f in inp.decode(video=0)]
-
-
-def is_blurred(image):
-    return image[INSIDE].std() < 30
+from crowdveil.video import frame_rate, process, redact_file
 
 
 def test_blurs_detected_frames_and_neighbours(tmp_path):
@@ -122,3 +79,24 @@ def test_applies_display_rotation(tmp_path):
     assert frame.shape[:2] == (WIDTH, HEIGHT)
     red = frame[..., 2].astype(int) - frame[..., 1]
     assert red[:16, -16:].mean() > 150  # marker moved from top-left to top-right
+
+
+def test_forces_keyframes_by_stream_time(tmp_path):
+    src, dst = tmp_path / "in.mp4", tmp_path / "out.mp4"
+    make_video(src)
+    with av.open(str(src)) as inp, av.open(str(dst), "w") as out:
+        process(inp, out, lambda image: [], 0, {"g": "1000"}, keyframe_interval=0.25)
+    with av.open(str(dst)) as result:
+        keys = [
+            i for i, p in enumerate(p for p in result.demux(video=0) if p.size) if p.is_keyframe
+        ]
+    assert keys == [0, 8, 16, 24]  # 30 fps: first frame at or after 0, 0.25, 0.5, 0.75 s
+
+
+def test_frame_rate_falls_back_when_unprobed():
+    assert frame_rate(SimpleNamespace(average_rate=Fraction(30000, 1001), guessed_rate=None)) == (
+        Fraction(30000, 1001)
+    )
+    assert frame_rate(SimpleNamespace(average_rate=None, guessed_rate=Fraction(60))) == 60
+    assert frame_rate(SimpleNamespace(average_rate=None, guessed_rate=Fraction(1000))) == 30
+    assert frame_rate(SimpleNamespace(average_rate=None, guessed_rate=None)) == 30

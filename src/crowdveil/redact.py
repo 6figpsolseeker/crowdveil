@@ -35,7 +35,11 @@ class Window(Generic[T]):
         index = len(self._items) - self._pending
         start = max(0, index - self.radius)
         stop = index + self.radius + 1
-        boxes = [b for i in range(start, min(stop, len(self._items))) for b in self._items[i][1]]
+        boxes = list(
+            dict.fromkeys(
+                b for i in range(start, min(stop, len(self._items))) for b in self._items[i][1]
+            )
+        )
         item = self._items[index][0]
         self._pending -= 1
         while len(self._items) - self._pending > self.radius:

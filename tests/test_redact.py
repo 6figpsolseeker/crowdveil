@@ -36,6 +36,12 @@ def test_window_edges_and_short_input():
     assert all(boxes == [box] for _, boxes in result)
 
 
+def test_window_merges_repeated_boxes():
+    box = (0, 0, 1, 1)
+    result = run(Window(2), [[box], [box, (5, 5, 1, 1)], [box]])
+    assert all(boxes.count(box) == 1 for _, boxes in result)
+
+
 def test_window_rejects_negative_radius():
     with pytest.raises(ValueError):
         Window(-1)

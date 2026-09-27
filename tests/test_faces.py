@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 
-from crowdveil.faces import FaceFilter, crew_images
+from crowdveil.faces import RECHECK_AFTER, FaceFilter, crew_images, iou
 from crowdveil.models import Model, fetch
 
 _SAMPLES = (
@@ -44,6 +44,16 @@ def test_detects_every_face_without_crew(faces, scene):
 
 
 @pytest.mark.network
+def test_max_width_returns_boxes_in_frame_coordinates(faces, scene):
+    image, _ = scene
+    full = faces(image)
+    downscaled = FaceFilter(max_width=image.shape[1] // 2)(image)
+    assert len(full) == 2
+    for a in full:
+        assert any(np.allclose(a, b, atol=0.1 * max(a[2], a[3])) for b in downscaled)
+
+
+@pytest.mark.network
 def test_crew_member_is_not_returned(scene):
     image, split = scene
     faces = FaceFilter()
@@ -71,3 +81,35 @@ def test_crew_images_filters_by_suffix(tmp_path):
 def test_crew_images_rejects_empty_dir(tmp_path):
     with pytest.raises(ValueError, match="no images"):
         crew_images(tmp_path)
+
+
+@pytest.mark.network
+def test_tracked_bystanders_skip_recognition_until_recheck(scene, monkeypatch):
+    image, split = scene
+    faces = FaceFilter()
+    faces.enroll([fetch(LENA)])
+    recognised = []
+    embed = faces._embed
+    monkeypatch.setattr(
+        faces, "_embed", lambda img, face: recognised.append(face[0]) or embed(img, face)
+    )
+
+    expected = faces(image)
+    assert [x >= split for x, _, _, _ in expected] == [True]
+    assert len(recognised) == 2
+
+    for _ in range(RECHECK_AFTER):
+        recognised.clear()
+        assert faces(image) == expected
+        assert len(recognised) == 1  # only the crew member is recognised again
+
+    recognised.clear()
+    assert faces(image) == expected
+    assert len(recognised) == 2
+
+
+def test_iou():
+    a = np.array([0, 0, 10, 10])
+    assert iou(a, a) == 1.0
+    assert iou(a, np.array([5, 0, 10, 10])) == pytest.approx(50 / 150)
+    assert iou(a, np.array([10, 0, 10, 10])) == 0.0
