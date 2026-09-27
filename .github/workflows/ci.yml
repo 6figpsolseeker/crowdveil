@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: uv run ruff check
+      - run: uv run ruff format --check
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            resolution: lowest-direct
+          - python: "3.14"
+            resolution: highest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/crowdveil
+          key: crowdveil-assets-${{ hashFiles('src/crowdveil/models.py', 'tests/test_faces.py') }}
+      - run: uv run --resolution ${{ matrix.resolution }} pytest

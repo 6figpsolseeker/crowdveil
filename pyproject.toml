@@ -1,0 +1,33 @@
+[project]
+name = "crowdveil"
+version = "0.1.0"
+description = "Blur bystanders' faces in video, keeping the creator and crew visible."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "av>=14.2",
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+]
+
+[project.scripts]
+crowdveil = "crowdveil.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["network: downloads model weights and test images"]
